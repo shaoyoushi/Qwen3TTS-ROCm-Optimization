@@ -1,0 +1,36 @@
+services:
+  qwen3-rocm-pure:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: qwen3-rocm-pure
+    network_mode: host
+    
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - "992"
+      
+    security_opt:
+      - seccomp=unconfined
+    cap_add:
+      - SYS_PTRACE
+      
+    environment:
+      - HSA_OVERRIDE_GFX_VERSION=11.0.0
+      - GPU_MAX_ALLOC_PERCENT=100
+      - GPU_MAX_HEAP_SIZE=100
+      - HSA_ENABLE_SDMA=0
+      - TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
+      - MIOPEN_USER_DB_PATH=/app/miopen_cache
+      - MIOPEN_LOG_LEVEL=4
+      - HF_HOME=/app/hf_cache
+      
+    volumes:
+      - ./hf_cache:/app/hf_cache
+      - ./miopen_cache:/app/miopen_cache
+      - ./outputs:/app/outputs
+      
+    restart: unless-stopped
