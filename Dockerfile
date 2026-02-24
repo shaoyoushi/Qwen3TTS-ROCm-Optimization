@@ -41,7 +41,7 @@ RUN sed -i '/model = AutoModel.from_pretrained/i \        kwargs["attn_implement
 RUN sed -i 's/with gr.Blocks(theme=theme, css=css) as demo:/with gr.Blocks() as demo:/' qwen_tts/cli/demo.py
 
 # ==========================================================
-# 💥 极简纯净版：放弃计时器，直接在类定义级别锁死 CPU 属性！
+# 💥 极简纯净版 V2：引入 BF16 防溢出，完美兼容所有参数量模型！
 # ==========================================================
 RUN cat << 'EOF' > /app/run_demo.py
 import sys
@@ -60,8 +60,9 @@ original_from_pretrained = Qwen3TTSModel.from_pretrained
 
 @classmethod
 def patched_from_pretrained(cls, *args, **kwargs):
-    kwargs['dtype'] = torch.float16
-    print(">> [AMD Hack] 强制要求 FP16 精度...", flush=True)
+    # 💥 核心修复 1：小模型对精度极其敏感，必须使用 bfloat16 彻底杜绝 NaN 溢出！
+    kwargs['dtype'] = torch.bfloat16
+    print(">> [AMD Hack] 强制要求 BF16 精度防溢出...", flush=True)
     wrapper_model = original_from_pretrained(*args, **kwargs)
     
     try:
@@ -73,16 +74,17 @@ def patched_from_pretrained(cls, *args, **kwargs):
         print(f">> [AMD Hack] 正在将 {type(real_vocoder).__name__} 发配至 16 核 CPU...", flush=True)
         real_vocoder.to('cpu').float()
         
-        # 2. 终极大招：直接重写该类的 device 属性！
-        # 这样无论内部代码怎么调用 self.device，永远只会返回 cpu，彻底掐断数据回流 GPU 的可能！
+        # 2. 直接重写该类的 device 属性！
         TokenizerClass.device = property(lambda self: torch.device('cpu'))
         
-        # 3. 在类级别（Class Level）拦截输入数据，确保类型绝对干净
+        # 3. 在类级别拦截输入数据，确保类型绝对干净
         if hasattr(TokenizerClass, 'decode'):
             orig_decode = TokenizerClass.decode
             def new_decode(self, *d_args, **d_kwargs):
                 def _to_cpu(x):
-                    if isinstance(x, torch.Tensor): return x.cpu()
+                    if isinstance(x, torch.Tensor): 
+                        # 💥 核心修复 2：浮点张量安全转为 FP32 交给 CPU，整数 Token 原样保留防越界！
+                        return x.cpu().float() if x.is_floating_point() else x.cpu()
                     if isinstance(x, tuple): return tuple(_to_cpu(i) for i in x)
                     if isinstance(x, list): return [_to_cpu(i) for i in x]
                     if isinstance(x, dict): return {k: _to_cpu(v) for k, v in x.items()}
@@ -102,5 +104,3 @@ if __name__ == "__main__":
     sys.argv[0] = "qwen-tts-demo"
     sys.exit(main())
 EOF
-
-CMD ["python3", "/app/run_demo.py", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", "--ip", "0.0.0.0", "--port", "8100"]
